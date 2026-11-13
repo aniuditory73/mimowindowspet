@@ -4,11 +4,12 @@ use std::io;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
+use std::time::Duration;
 
 use slint::ComponentHandle;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 
-use crate::domain::{Command, Corner, TaskState};
+use crate::domain::{Command, Corner, Settings, TaskState};
 use crate::platform::windows;
 use crate::storage::Store;
 use crate::tasks::{self, Cancellation, Event, Runner, SubmitError};
@@ -16,7 +17,7 @@ use crate::ui::{self, MimoTray, MimoWindow};
 
 enum Update {
     Task(Event),
-    Settings(Result<Corner, ()>),
+    Settings(Result<Settings, ()>),
 }
 
 struct ActiveTask {
@@ -28,8 +29,8 @@ struct ActiveTask {
 }
 
 struct App {
-    corner: Corner,
-    save_corner: Option<Sender<Corner>>,
+    settings: Settings,
+    save_settings: Option<Sender<Settings>>,
     runner: Runner,
     active: VecDeque<ActiveTask>,
     next_id: u64,
@@ -72,11 +73,13 @@ impl App {
             Update::Settings(result) => {
                 window.set_saving(false);
                 match result {
-                    Ok(corner) => {
-                        self.corner = corner;
-                        window.set_selected_corner(ui::corner_index(corner));
+                    Ok(settings) => {
+                        self.settings = settings;
+                        window.set_selected_corner(ui::corner_index(settings.corner));
+                        window.set_pinned(settings.pinned);
                         window.set_settings_message("".into());
-                        place_window(window, corner);
+                        place_window(window, settings.corner);
+                        update_window_pin(window);
                     }
                     Err(()) => window.set_settings_message("Настройки недоступны".into()),
                 }
@@ -96,6 +99,19 @@ impl App {
                 }
                 self.render_tasks(window);
             }
+        }
+    }
+
+    fn save_settings(&self, window: &MimoWindow, settings: Settings) {
+        if self
+            .save_settings
+            .as_ref()
+            .is_some_and(|sender| sender.send(settings).is_ok())
+        {
+            window.set_saving(true);
+            window.set_settings_message("Сохранение…".into());
+        } else {
+            window.set_settings_message("Настройки недоступны".into());
         }
     }
 
@@ -157,10 +173,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let publish = publish.clone();
         move |event| publish(Update::Task(event))
     })?;
-    let (save_corner, settings_worker) = start_settings(publish)?;
+    let (save_settings, settings_worker) = start_settings(publish)?;
     let app = Rc::new(RefCell::new(App {
-        corner: Corner::default(),
-        save_corner: Some(save_corner),
+        settings: Settings::default(),
+        save_settings: Some(save_settings),
         runner,
         active: VecDeque::new(),
         next_id: 1,
@@ -183,14 +199,28 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     bind_tasks(&window, &app);
     bind_shell(&window, &tray, &app);
+    let pin_timer = slint::Timer::default();
+    let weak = window.as_weak();
+    pin_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(250),
+        move || {
+            if let Some(window) = weak.upgrade()
+                && window.get_pinned()
+            {
+                update_window_pin(&window);
+            }
+        },
+    );
     let event_loop = window
         .show()
         .and_then(|()| tray.show())
         .and_then(|()| slint::run_event_loop());
+    pin_timer.stop();
 
     {
         let mut app = app.borrow_mut();
-        app.save_corner.take();
+        app.save_settings.take();
         for task in &app.active {
             task.cancel.request();
         }
@@ -247,7 +277,11 @@ fn bind_shell(window: &MimoWindow, tray: &MimoTray, app: &Rc<RefCell<App>>) {
     let state = Rc::clone(app);
     window.on_toggle_panel(move || {
         if let Some(window) = weak.upgrade() {
-            set_expanded(&window, !window.get_expanded(), state.borrow().corner);
+            set_expanded(
+                &window,
+                !window.get_expanded(),
+                state.borrow().settings.corner,
+            );
         }
     });
     ui::bind_close(window);
@@ -258,7 +292,7 @@ fn bind_shell(window: &MimoWindow, tray: &MimoTray, app: &Rc<RefCell<App>>) {
         if let Some(window) = weak.upgrade()
             && window.show().is_ok()
         {
-            set_expanded(&window, true, state.borrow().corner);
+            set_expanded(&window, true, state.borrow().settings.corner);
             window
                 .window()
                 .with_winit_window(|native| native.focus_window());
@@ -280,17 +314,31 @@ fn bind_shell(window: &MimoWindow, tray: &MimoTray, app: &Rc<RefCell<App>>) {
             && !window.get_saving()
             && let Some(&corner) = Corner::ALL.get(index as usize)
         {
-            if state
-                .borrow()
-                .save_corner
-                .as_ref()
-                .is_some_and(|sender| sender.send(corner).is_ok())
-            {
-                window.set_saving(true);
-                window.set_settings_message("Сохранение…".into());
-            } else {
-                window.set_settings_message("Настройки недоступны".into());
-            }
+            let state = state.borrow();
+            state.save_settings(
+                &window,
+                Settings {
+                    corner,
+                    ..state.settings
+                },
+            );
+        }
+    });
+
+    let weak = window.as_weak();
+    let state = Rc::clone(app);
+    window.on_toggle_pin(move || {
+        if let Some(window) = weak.upgrade()
+            && !window.get_saving()
+        {
+            let state = state.borrow();
+            state.save_settings(
+                &window,
+                Settings {
+                    pinned: !state.settings.pinned,
+                    ..state.settings
+                },
+            );
         }
     });
 
@@ -306,7 +354,8 @@ fn bind_shell(window: &MimoWindow, tray: &MimoTray, app: &Rc<RefCell<App>>) {
             let state = Rc::clone(&state);
             slint::Timer::single_shot(std::time::Duration::ZERO, move || {
                 if let Some(window) = weak.upgrade() {
-                    place_window(&window, state.borrow().corner);
+                    place_window(&window, state.borrow().settings.corner);
+                    update_window_pin(&window);
                 }
             });
         }
@@ -325,6 +374,7 @@ fn set_expanded(window: &MimoWindow, expanded: bool, corner: Corner) {
         .window()
         .set_size(slint::LogicalSize::new(width, height));
     place_window(window, corner);
+    update_window_pin(window);
 }
 
 fn place_window(window: &MimoWindow, corner: Corner) {
@@ -335,13 +385,19 @@ fn place_window(window: &MimoWindow, corner: Corner) {
     }
 }
 
+fn update_window_pin(window: &MimoWindow) {
+    if window.window().is_visible() {
+        let _ = windows::update_window_pin(window.window(), window.get_pinned());
+    }
+}
+
 fn quit() {
     let _ = slint::quit_event_loop();
 }
 
 fn start_settings(
     publish: impl Fn(Update) + Send + 'static,
-) -> io::Result<(Sender<Corner>, thread::JoinHandle<()>)> {
+) -> io::Result<(Sender<Settings>, thread::JoinHandle<()>)> {
     let (sender, requests) = mpsc::channel();
     let worker = thread::Builder::new()
         .name("mimo-settings".into())
@@ -349,9 +405,9 @@ fn start_settings(
             publish(Update::Settings(
                 Store::open().and_then(|store| store.load()).map_err(|_| ()),
             ));
-            for corner in requests {
-                let result = Store::open().and_then(|store| store.save(corner));
-                publish(Update::Settings(result.map(|()| corner).map_err(|_| ())));
+            for settings in requests {
+                let result = Store::open().and_then(|store| store.save(settings));
+                publish(Update::Settings(result.map(|()| settings).map_err(|_| ())));
             }
         })?;
     Ok((sender, worker))

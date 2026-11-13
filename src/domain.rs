@@ -51,6 +51,21 @@ impl Corner {
     ];
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Settings {
+    pub corner: Corner,
+    pub pinned: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            corner: Corner::default(),
+            pinned: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TaskState::*;

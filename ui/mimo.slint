@@ -20,6 +20,7 @@ export component MimoTray inherits SystemTrayIcon {
 
 export component MimoWindow inherits Window {
     in property <bool> expanded;
+    in property <bool> pinned: true;
     in property <image> window-icon;
     in-out property <bool> settings-open;
     in property <[string]> corners;
@@ -35,6 +36,7 @@ export component MimoWindow inherits Window {
     in property <bool> show-progress;
     in property <bool> can-submit: true;
     callback toggle-panel();
+    callback toggle-pin();
     callback submit-command(string) -> bool;
     callback run-check();
     callback cancel-task();
@@ -109,6 +111,13 @@ export component MimoWindow inherits Window {
                 height: 34px;
                 Text { text: "MIMO"; color: #f4f4fb; font-weight: 700; font-size: 19px; vertical-alignment: center; }
                 Rectangle { horizontal-stretch: 1; }
+                Button {
+                    text: root.pinned ? @tr("Закреплено") : @tr("Закрепить");
+                    accessible-label: root.pinned ? @tr("Открепить от верхнего слоя окон") : @tr("Закрепить поверх окон");
+                    primary: root.pinned;
+                    enabled: !root.saving;
+                    clicked => { root.toggle-pin(); }
+                }
                 Button {
                     text: root.settings-open ? @tr("К задачам") : @tr("Настройки");
                     clicked => { root.settings-open = !root.settings-open; }

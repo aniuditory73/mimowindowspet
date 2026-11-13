@@ -10,7 +10,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
 };
 
-use crate::domain::Corner;
+use crate::domain::{Corner, Settings};
 use crate::platform::windows::local_app_data;
 
 const CONFIG: &str = "settings-v1.txt";
@@ -49,10 +49,10 @@ impl Store {
         })
     }
 
-    pub fn load(&self) -> io::Result<Corner> {
+    pub fn load(&self) -> io::Result<Settings> {
         let file = match open_config(&self.root.join(CONFIG)) {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Corner::default()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Settings::default()),
             Err(error) => return Err(error),
         };
         let mut source = String::new();
@@ -63,23 +63,14 @@ impl Store {
                 "settings are too large",
             ));
         }
-        let mut lines = source.lines();
-        match (lines.next(), lines.next(), lines.next()) {
-            (Some("version=1"), Some("corner=top-left"), None) => Ok(Corner::TopLeft),
-            (Some("version=1"), Some("corner=top-right"), None) => Ok(Corner::TopRight),
-            (Some("version=1"), Some("corner=bottom-left"), None) => Ok(Corner::BottomLeft),
-            (Some("version=1"), Some("corner=bottom-right"), None) => Ok(Corner::BottomRight),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unknown settings format",
-            )),
-        }
+        parse_settings(&source)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown settings format"))
     }
 
-    pub fn save(&self, corner: Corner) -> io::Result<()> {
+    pub fn save(&self, settings: Settings) -> io::Result<()> {
         // Check the format before replacing the configuration, including unknown versions.
         self.load()?;
-        let name = match corner {
+        let name = match settings.corner {
             Corner::TopLeft => "top-left",
             Corner::TopRight => "top-right",
             Corner::BottomLeft => "bottom-left",
@@ -94,7 +85,9 @@ impl Store {
             .create_new(true)
             .share_mode(0)
             .open(&temp)?;
-        let written = writeln!(file, "version=1\ncorner={name}").and_then(|()| file.sync_all());
+        let pinned = settings.pinned;
+        let written = writeln!(file, "version=1\ncorner={name}\npinned={pinned}")
+            .and_then(|()| file.sync_all());
         drop(file);
         let result = written.and_then(|()| fs::rename(&temp, self.root.join(CONFIG)));
         if result.is_err() {
@@ -102,6 +95,29 @@ impl Store {
         }
         result
     }
+}
+
+fn parse_settings(source: &str) -> Option<Settings> {
+    let mut lines = source.lines();
+    if lines.next()? != "version=1" {
+        return None;
+    }
+    let corner = match lines.next()? {
+        "corner=top-left" => Corner::TopLeft,
+        "corner=top-right" => Corner::TopRight,
+        "corner=bottom-left" => Corner::BottomLeft,
+        "corner=bottom-right" => Corner::BottomRight,
+        _ => return None,
+    };
+    let pinned = match lines.next() {
+        None | Some("pinned=true") => true,
+        Some("pinned=false") => false,
+        _ => return None,
+    };
+    lines
+        .next()
+        .is_none()
+        .then_some(Settings { corner, pinned })
 }
 
 fn open_directory(path: &Path) -> io::Result<File> {
@@ -157,17 +173,39 @@ mod tests {
         let other = base.join("outside.txt");
         {
             let store = Store::open_under(&base).unwrap();
-            assert_eq!(store.load().unwrap(), Corner::TopRight);
-            store.save(Corner::BottomLeft).unwrap();
-            store.save(Corner::TopLeft).unwrap();
+            assert_eq!(store.load().unwrap(), Settings::default());
+            store
+                .save(Settings {
+                    corner: Corner::BottomLeft,
+                    pinned: true,
+                })
+                .unwrap();
+            store
+                .save(Settings {
+                    corner: Corner::TopLeft,
+                    pinned: false,
+                })
+                .unwrap();
         }
         {
             let store = Store::open_under(&base).unwrap();
-            assert_eq!(store.load().unwrap(), Corner::TopLeft);
+            assert_eq!(
+                store.load().unwrap(),
+                Settings {
+                    corner: Corner::TopLeft,
+                    pinned: false
+                }
+            );
             fs::write(&config, "version=1\r\ncorner=bottom-right\r\n").unwrap();
-            assert_eq!(store.load().unwrap(), Corner::BottomRight);
+            assert_eq!(
+                store.load().unwrap(),
+                Settings {
+                    corner: Corner::BottomRight,
+                    pinned: true
+                }
+            );
             fs::write(&config, "version=2\n").unwrap();
-            assert!(store.save(Corner::TopRight).is_err());
+            assert!(store.save(Settings::default()).is_err());
             assert_eq!(fs::read_to_string(&config).unwrap(), "version=2\n");
             fs::remove_file(&config).unwrap();
             fs::write(&other, "version=1\ncorner=top-left\n").unwrap();
