@@ -3,7 +3,11 @@
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
+mod codex;
+#[cfg(windows)]
 mod domain;
+#[cfg(windows)]
+mod files;
 #[cfg(windows)]
 mod notes;
 #[cfg(windows)]

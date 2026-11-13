@@ -2,14 +2,31 @@
 pub enum Command {
     CheckResponsiveness,
     CreateNote(String),
+    ReviseNote {
+        id: String,
+        expected: String,
+        text: String,
+    },
     FindNotes(String),
+    PreviewFiles(crate::files::Scope),
+    PreviewRename(crate::files::Scope, String, String),
+    MoveFiles(crate::files::Batch),
+    UndoFiles(crate::files::Batch),
+    CheckCodex,
+    RunCodex(crate::files::Scope, String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskKind {
     Check,
     CreateNote,
+    ReviseNote,
     FindNotes,
+    PreviewFiles,
+    MoveFiles,
+    UndoFiles,
+    CheckCodex,
+    RunCodex,
 }
 
 impl Command {
@@ -17,7 +34,13 @@ impl Command {
         match self {
             Self::CheckResponsiveness => TaskKind::Check,
             Self::CreateNote(_) => TaskKind::CreateNote,
+            Self::ReviseNote { .. } => TaskKind::ReviseNote,
             Self::FindNotes(_) => TaskKind::FindNotes,
+            Self::PreviewFiles(_) | Self::PreviewRename(_, _, _) => TaskKind::PreviewFiles,
+            Self::MoveFiles(_) => TaskKind::MoveFiles,
+            Self::UndoFiles(_) => TaskKind::UndoFiles,
+            Self::CheckCodex => TaskKind::CheckCodex,
+            Self::RunCodex(_, _) => TaskKind::RunCodex,
         }
     }
 }

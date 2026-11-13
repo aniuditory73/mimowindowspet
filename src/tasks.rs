@@ -4,13 +4,14 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::domain::{Command, TaskState};
-use crate::{notes, policy, storage::Store};
+use crate::{codex, files, notes, policy, storage::Store};
 
 pub const CAPACITY: usize = 3;
 const CHECK_STEPS: u8 = 8;
 
 pub struct Event {
     pub id: u64,
+    pub kind: crate::domain::TaskKind,
     pub state: TaskState,
     pub progress: u8,
     pub output: Option<Output>,
@@ -19,6 +20,10 @@ pub struct Event {
 pub enum Output {
     Error(&'static str),
     Notes(notes::Matches),
+    RevisedNote(String),
+    Files(files::Preview),
+    FileChanges(files::BatchResult, bool),
+    Codex(String),
 }
 
 pub struct Cancellation(mpsc::Sender<()>);
@@ -84,9 +89,11 @@ impl Runner {
 }
 
 fn run(job: Job, publish: &impl Fn(Event)) {
+    let kind = job.command.kind();
     let send = |state, progress, output| {
         publish(Event {
             id: job.id,
+            kind,
             state,
             progress,
             output,
@@ -119,12 +126,90 @@ fn run(job: Job, publish: &impl Fn(Event)) {
                 .map(|()| None),
             send,
         ),
+        Command::ReviseNote { id, expected, text } => report_note_result(
+            Store::open()
+                .and_then(|store| notes::revise(&store, &id, &expected, &text, &cancelled))
+                .map(|()| Some(Output::RevisedNote(text))),
+            send,
+        ),
         Command::FindNotes(query) => report_note_result(
             Store::open()
                 .and_then(|store| notes::find(&store, &query, &cancelled))
                 .map(|found| Some(Output::Notes(found))),
             send,
         ),
+        Command::PreviewFiles(scope) => match files::preview(scope, &cancelled) {
+            Ok(preview) => send(TaskState::Succeeded, 0, Some(Output::Files(preview))),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                send(TaskState::Cancelled, 0, None)
+            }
+            Err(_) => send(
+                TaskState::Failed,
+                0,
+                Some(Output::Error(
+                    "Папка недоступна или превышен предел просмотра",
+                )),
+            ),
+        },
+        Command::PreviewRename(scope, source, destination) => {
+            match files::preview_rename(scope, &source, &destination) {
+                Ok(preview) => send(TaskState::Succeeded, 0, Some(Output::Files(preview))),
+                Err(error) => {
+                    let message = if error.kind() == io::ErrorKind::InvalidInput {
+                        "Укажите два разных имени без пути"
+                    } else {
+                        "Исходный файл недоступен"
+                    };
+                    send(TaskState::Failed, 0, Some(Output::Error(message)));
+                }
+            }
+        }
+        Command::MoveFiles(batch) | Command::UndoFiles(batch) => {
+            let undo = kind == crate::domain::TaskKind::UndoFiles;
+            match files::execute(batch, undo, &cancelled) {
+                Ok(result) => {
+                    let state = if result.stopped {
+                        TaskState::Cancelled
+                    } else if result.errors > 0 {
+                        TaskState::Failed
+                    } else {
+                        TaskState::Succeeded
+                    };
+                    send(state, 0, Some(Output::FileChanges(result, undo)));
+                }
+                Err(_) => send(
+                    TaskState::Failed,
+                    0,
+                    Some(Output::Error("Не удалось открыть разрешённую папку")),
+                ),
+            }
+        }
+        Command::CheckCodex => report_codex_result(codex::check(&cancelled), send),
+        Command::RunCodex(scope, prompt) => {
+            report_codex_result(codex::run(scope, &prompt, &cancelled), send)
+        }
+    }
+}
+
+fn report_codex_result(result: io::Result<String>, send: impl Fn(TaskState, u8, Option<Output>)) {
+    match result {
+        Ok(output) => send(TaskState::Succeeded, 0, Some(Output::Codex(output))),
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+            send(TaskState::Cancelled, 0, None)
+        }
+        Err(error) => {
+            let message = match error.kind() {
+                io::ErrorKind::NotFound => "Codex CLI или папка проекта недоступны",
+                io::ErrorKind::TimedOut => "Истекло время ожидания Codex",
+                io::ErrorKind::PermissionDenied => "Проверьте авторизацию и доступ к проекту",
+                io::ErrorKind::Unsupported => "Версия CLI или песочница MXC не поддерживается",
+                io::ErrorKind::NotConnected => "Codex не удалось подключиться к сети",
+                io::ErrorKind::WouldBlock => "Codex достиг лимита запросов или квоты",
+                io::ErrorKind::InvalidData => "Codex вернул неполный или некорректный результат",
+                _ => "Codex завершился с ошибкой",
+            };
+            send(TaskState::Failed, 0, Some(Output::Error(message)));
+        }
     }
 }
 

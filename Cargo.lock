@@ -2448,6 +2448,7 @@ name = "mimo"
 version = "0.1.0"
 dependencies = [
  "raw-window-handle",
+ "serde_json",
  "slint",
  "slint-build",
  "windows-sys 0.61.2",

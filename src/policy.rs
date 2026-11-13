@@ -6,14 +6,32 @@ pub const MAX_SEARCH_BYTES: usize = 256;
 pub fn validate(command: &Command) -> Result<(), &'static str> {
     match command {
         Command::CheckResponsiveness => Ok(()),
-        Command::CreateNote(text) if text.trim().is_empty() => Err("Введите текст заметки"),
-        Command::CreateNote(text) if text.len() > MAX_NOTE_BYTES || text.contains('\0') => {
+        Command::CreateNote(text) | Command::ReviseNote { text, .. } if text.trim().is_empty() => {
+            Err("Введите текст заметки")
+        }
+        Command::CreateNote(text) | Command::ReviseNote { text, .. }
+            if text.len() > MAX_NOTE_BYTES || text.contains('\0') =>
+        {
             Err("Сократите текст заметки до 2 КБ")
         }
         Command::FindNotes(query) if query.len() > MAX_SEARCH_BYTES || query.contains('\0') => {
             Err("Сократите поисковый запрос")
         }
-        Command::CreateNote(_) | Command::FindNotes(_) => Ok(()),
+        Command::CreateNote(_)
+        | Command::ReviseNote { .. }
+        | Command::FindNotes(_)
+        | Command::PreviewFiles(_)
+        | Command::PreviewRename(_, _, _) => Ok(()),
+        Command::MoveFiles(batch) | Command::UndoFiles(batch) if batch.moves.is_empty() => {
+            Err("Нет файлов для операции")
+        }
+        Command::MoveFiles(_) | Command::UndoFiles(_) => Ok(()),
+        Command::RunCodex(_, prompt)
+            if prompt.trim().is_empty() || prompt.len() > 8192 || prompt.contains('\0') =>
+        {
+            Err("Введите запрос для Codex длиной до 8 КБ")
+        }
+        Command::CheckCodex | Command::RunCodex(_, _) => Ok(()),
     }
 }
 

@@ -27,6 +27,82 @@ impl Store {
         Self::open_under(&local_app_data()?)
     }
 
+    pub fn record_task(
+        &self,
+        kind: crate::domain::TaskKind,
+        state: crate::domain::TaskState,
+    ) -> io::Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let directory = self.root.join("history-v1");
+        match fs::create_dir(&directory) {
+            Ok(()) => (),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+            Err(error) => return Err(error),
+        }
+        let _guard = open_directory(&directory)?;
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_micros();
+        let sequence = TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let path = directory.join(format!("{time:020}-{}-{sequence}.txt", std::process::id()));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .open(path)?;
+        writeln!(file, "{kind:?} · {state:?}")?;
+        file.sync_all()
+    }
+
+    pub fn history(&self) -> io::Result<Vec<String>> {
+        let directory = self.root.join("history-v1");
+        let _guard = match open_directory(&directory) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut paths = std::collections::BinaryHeap::new();
+        for entry in fs::read_dir(directory)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|extension| extension == "txt") {
+                paths.push(std::cmp::Reverse(path));
+                if paths.len() > 40 {
+                    paths.pop();
+                }
+            }
+        }
+        let mut rows = Vec::new();
+        for std::cmp::Reverse(path) in paths.into_sorted_vec() {
+            let mut text = String::new();
+            open_regular_file(&path)?
+                .take(128)
+                .read_to_string(&mut text)?;
+            if let Some((kind, state)) = text.trim_end().split_once(" · ") {
+                let kind = match kind {
+                    "Check" => "Проверка отклика",
+                    "CreateNote" => "Создание заметки",
+                    "ReviseNote" => "Редактирование заметки",
+                    "FindNotes" => "Поиск заметок",
+                    "PreviewFiles" => "Просмотр папки",
+                    "MoveFiles" => "Сортировка файлов",
+                    "UndoFiles" => "Возврат файлов",
+                    "CheckCodex" => "Проверка Codex CLI",
+                    "RunCodex" => "Задача Codex",
+                    _ => continue,
+                };
+                let state = match state {
+                    "Succeeded" => "Выполнено",
+                    "Failed" => "Ошибка",
+                    "Cancelled" => "Отменено",
+                    _ => continue,
+                };
+                rows.push(format!("{kind} · {state}"));
+            }
+        }
+        Ok(rows)
+    }
+
     pub fn notes_directory(&self, create: bool) -> io::Result<(PathBuf, File)> {
         let path = self.root.join("notes-v1");
         if create {
@@ -41,13 +117,7 @@ impl Store {
     }
 
     pub(crate) fn open_under(app_data: &Path) -> io::Result<Self> {
-        // Hold each directory open without sharing deletion so it cannot be replaced mid-operation.
-        let mut parents = Vec::new();
-        for parent in app_data.ancestors().collect::<Vec<_>>().into_iter().rev() {
-            if parent.has_root() {
-                parents.push(open_directory(parent)?);
-            }
-        }
+        let mut parents = guard_directories(app_data)?;
         let app_data = app_data.canonicalize()?;
         let root = app_data.join("MIMO");
         match fs::create_dir(&root) {
@@ -133,7 +203,18 @@ fn parse_settings(source: &str) -> Option<Settings> {
         .then_some(Settings { corner, pinned })
 }
 
-fn open_directory(path: &Path) -> io::Result<File> {
+pub(crate) fn guard_directories(path: &Path) -> io::Result<Vec<File>> {
+    // Hold each directory open without sharing deletion so it cannot be replaced mid-operation.
+    path.ancestors()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .filter(|parent| parent.has_root())
+        .map(open_directory)
+        .collect()
+}
+
+pub(crate) fn open_directory(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)

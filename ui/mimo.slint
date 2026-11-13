@@ -1,6 +1,6 @@
-import { Button, LineEdit, ProgressIndicator, ScrollView } from "std-widgets.slint";
+import { Button, LineEdit, ProgressIndicator, ScrollView, TextEdit } from "std-widgets.slint";
 
-export struct NoteView { label: string, text: string }
+export struct NoteView { id: string, label: string, text: string }
 
 export component MimoTray inherits SystemTrayIcon {
     in property <image> tray-image;
@@ -26,14 +26,41 @@ export component MimoWindow inherits Window {
     in property <image> window-icon;
     in-out property <bool> settings-open;
     in-out property <bool> notes-open;
+    in-out property <bool> files-open;
+    in-out property <bool> codex-open;
+    in-out property <bool> history-open;
+    in property <[string]> history-rows;
+    in property <string> history-message;
+    in-out property <bool> confirming-codex;
+    in-out property <string> codex-path;
+    in-out property <string> codex-prompt;
+    in property <string> codex-output;
+    in property <string> codex-message;
+    in property <bool> codex-busy;
+    in-out property <bool> confirming-moves;
+    in-out property <bool> rename-open;
+    in-out property <string> rename-source;
+    in-out property <string> rename-destination;
+    in-out property <string> files-path;
+    in property <string> files-root;
+    in property <string> files-message;
+    in property <[string]> file-rows;
+    in property <bool> files-busy;
+    in property <bool> can-move;
+    in property <bool> can-undo;
     in property <[NoteView]> notes;
     in-out property <string> note-text;
+    in-out property <string> note-id;
+    in-out property <string> note-draft;
+    in-out property <bool> note-editing;
+    in property <bool> note-saving;
     in property <string> notes-summary;
     in-out property <string> notes-query;
     in property <[string]> corners;
     in property <int> selected-corner;
     in property <bool> saving;
     in property <string> settings-message;
+    in property <string> hotkey-message;
     in-out property <string> command;
     in property <string> message;
     in property <string> task-name;
@@ -43,10 +70,19 @@ export component MimoWindow inherits Window {
     in property <bool> show-progress;
     in property <bool> can-submit: true;
     callback toggle-panel();
+    callback show-panel();
     callback toggle-pin();
     callback submit-command(string) -> bool;
     callback run-check();
     callback find-notes(string);
+    callback revise-note(string, string, string);
+    callback preview-files(string);
+    callback preview-rename(string, string, string);
+    callback apply-moves();
+    callback undo-moves();
+    callback check-codex();
+    callback run-codex(string, string);
+    callback load-history();
     callback cancel-task();
     callback select-corner(int);
     callback exit-app();
@@ -127,9 +163,12 @@ export component MimoWindow inherits Window {
                     clicked => { root.toggle-pin(); }
                 }
                 Button {
-                    text: root.settings-open || root.notes-open ? @tr("К задачам") : @tr("Настройки");
+                    text: root.settings-open || root.notes-open || root.files-open || root.codex-open || root.history-open ? @tr("К задачам") : @tr("Настройки");
                     clicked => {
                         if (root.notes-open) { root.notes-open = false; }
+                        else if (root.files-open) { root.files-open = false; root.confirming-moves = false; }
+                        else if (root.codex-open) { root.codex-open = false; root.confirming-codex = false; }
+                        else if (root.history-open) { root.history-open = false; }
                         else { root.settings-open = !root.settings-open; }
                     }
                 }
@@ -148,7 +187,7 @@ export component MimoWindow inherits Window {
                 }
                 HorizontalLayout {
                     spacing: 8px;
-                    Text { text: root.settings-message; color: #d3d4e5; vertical-alignment: center; overflow: elide; }
+                    Text { text: root.settings-message == "" ? root.hotkey-message : root.settings-message; color: #d3d4e5; vertical-alignment: center; overflow: elide; }
                     Rectangle { horizontal-stretch: 1; }
                     Button { text: @tr("Выйти"); clicked => { root.exit-app(); } }
                 }
@@ -163,37 +202,114 @@ export component MimoWindow inherits Window {
                         text <=> root.notes-query;
                         placeholder-text: @tr("Поиск по заметкам");
                         accessible-label: @tr("Поиск по заметкам");
+                        enabled: !root.note-saving;
                         accepted => { if (root.can-submit) { root.find-notes(root.notes-query); } }
                     }
-                    Button { text: @tr("Найти"); enabled: root.can-submit; clicked => { root.find-notes(root.notes-query); } }
+                    Button { text: @tr("Найти"); enabled: root.can-submit && !root.note-saving; clicked => { root.find-notes(root.notes-query); } }
                 }
                 if root.note-text == "": ScrollView {
                     vertical-stretch: 1;
                     VerticalLayout {
                         spacing: 4px;
-                        for note in root.notes: Button { text: note.label; clicked => { root.note-text = note.text; } }
+                        for note in root.notes: Button { height: 34px; text: note.label; clicked => { root.note-text = note.text; root.note-id = note.id; root.note-editing = false; } }
                     }
                 }
-                if root.note-text != "": ScrollView {
+                if root.note-text != "" && !root.note-editing: ScrollView {
                     vertical-stretch: 1;
                     Text { text: root.note-text; color: #ededf7; wrap: word-wrap; }
+                }
+                if root.note-editing: TextEdit { text <=> root.note-draft; vertical-stretch: 1; read-only: root.note-saving; accessible-label: @tr("Текст заметки"); }
+                HorizontalLayout {
+                    height: 34px;
+                    spacing: 8px;
+                    Text { text: root.notes-summary; color: #d3d4e5; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                    Rectangle { horizontal-stretch: 1; }
+                    if root.note-text != "" && !root.note-editing: Button { text: @tr("К списку"); clicked => { root.note-text = ""; root.note-id = ""; } }
+                    if root.note-id != "" && !root.note-editing: Button { text: @tr("Изменить"); clicked => { root.note-draft = root.note-text; root.note-editing = true; } }
+                    if root.note-editing: Button { text: @tr("Заменить текст"); enabled: root.can-submit && !root.note-saving; clicked => { root.revise-note(root.note-id, root.note-text, root.note-draft); } }
+                    if root.note-editing: Button { text: @tr("Отмена"); enabled: !root.note-saving; clicked => { root.note-editing = false; } }
+                }
+            }
+
+            if root.files-open: VerticalLayout {
+                spacing: 7px;
+                if !root.confirming-moves: HorizontalLayout {
+                    spacing: 8px;
+                    height: 34px;
+                    LineEdit { text <=> root.files-path; placeholder-text: @tr("Полный путь к папке"); accessible-label: @tr("Папка для просмотра"); }
+                    Button { text: @tr("Разрешить просмотр"); enabled: root.can-submit && !root.files-busy; clicked => { root.rename-open = false; root.preview-files(root.files-path); } }
+                }
+                if root.rename-open && !root.confirming-moves: HorizontalLayout {
+                    spacing: 8px;
+                    height: 34px;
+                    LineEdit { text <=> root.rename-source; placeholder-text: @tr("Исходное имя"); accessible-label: @tr("Исходное имя файла"); }
+                    LineEdit { text <=> root.rename-destination; placeholder-text: @tr("Новое имя"); accessible-label: @tr("Новое имя файла"); }
+                    Button { text: @tr("Проверить"); enabled: root.can-submit && !root.files-busy; clicked => { root.preview-rename(root.files-path, root.rename-source, root.rename-destination); } }
+                }
+                Text { text: root.confirming-moves ? @tr("Перенести перечисленные файлы без перезаписи?") : root.files-message; color: #d3d4e5; overflow: elide; }
+                Text { text: root.files-root; color: #d3d4e5; wrap: word-wrap; }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 4px;
+                        for row in root.file-rows: Text { text: row; color: #ededf7; wrap: word-wrap; }
+                    }
                 }
                 HorizontalLayout {
                     height: 34px;
                     spacing: 8px;
-                    Text { text: root.note-text == "" ? root.notes-summary : @tr("Заметка"); color: #d3d4e5; vertical-alignment: center; }
-                    Rectangle { horizontal-stretch: 1; }
-                    if root.note-text != "": Button { text: @tr("К списку"); clicked => { root.note-text = ""; } }
+                    if root.confirming-moves: Button { text: @tr("Подтвердить перенос"); enabled: root.can-submit && !root.files-busy; clicked => { root.confirming-moves = false; root.apply-moves(); } }
+                    if root.confirming-moves: Button { text: @tr("Назад"); clicked => { root.confirming-moves = false; } }
+                    if !root.confirming-moves: Button { text: @tr("Перенести…"); enabled: root.can-move && !root.files-busy; clicked => { root.confirming-moves = true; } }
+                    if !root.confirming-moves: Button { text: @tr("Вернуть файлы"); enabled: root.can-undo && root.can-submit && !root.files-busy; clicked => { root.undo-moves(); } }
+                    if !root.confirming-moves && !root.files-busy: Button { text: root.rename-open ? @tr("Скрыть имена") : @tr("Переименовать"); clicked => { root.rename-open = !root.rename-open; } }
+                    if root.files-busy && root.can-cancel: Button { text: @tr("Отменить задачу"); clicked => { root.cancel-task(); } }
                 }
             }
 
-            if !root.settings-open && !root.notes-open: VerticalLayout {
+            if root.codex-open: VerticalLayout {
+                spacing: 7px;
+                if !root.confirming-codex: LineEdit { text <=> root.codex-path; placeholder-text: @tr("Полный путь к проекту"); accessible-label: @tr("Папка проекта Codex"); enabled: !root.codex-busy; }
+                if !root.confirming-codex: LineEdit { text <=> root.codex-prompt; placeholder-text: @tr("Что проверить в проекте?"); accessible-label: @tr("Запрос для Codex"); enabled: !root.codex-busy; }
+                if root.confirming-codex: Text { text: @tr("Codex отправит запрос и может передать данные проекта в сервис OpenAI. Доступ к проекту — на чтение."); color: #ededf7; wrap: word-wrap; }
+                Text { text: root.confirming-codex ? root.codex-path : root.codex-message; color: #d3d4e5; wrap: word-wrap; }
+                ScrollView {
+                    vertical-stretch: 1;
+                    Text { text: root.confirming-codex ? root.codex-prompt : root.codex-output; color: #ededf7; wrap: word-wrap; }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 34px;
+                    if !root.confirming-codex: Button { text: @tr("Проверить CLI"); enabled: root.can-submit && !root.codex-busy; clicked => { root.check-codex(); } }
+                    if !root.confirming-codex: Button { text: @tr("Запустить…"); enabled: root.can-submit && !root.codex-busy && root.codex-path != "" && root.codex-prompt != ""; clicked => { root.confirming-codex = true; } }
+                    if root.confirming-codex: Button { text: @tr("Отправить в Codex"); enabled: root.can-submit && !root.codex-busy; clicked => { root.confirming-codex = false; root.run-codex(root.codex-path, root.codex-prompt); } }
+                    if root.confirming-codex: Button { text: @tr("Назад"); clicked => { root.confirming-codex = false; } }
+                    if root.codex-busy && root.can-cancel: Button { text: @tr("Отменить задачу"); clicked => { root.cancel-task(); } }
+                }
+            }
+
+            if root.history-open: VerticalLayout {
+                spacing: 8px;
+                Text { text: root.history-message; color: #d3d4e5; }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 6px;
+                        for row in root.history-rows: Text { text: row; color: #ededf7; }
+                    }
+                }
+            }
+
+            if !root.settings-open && !root.notes-open && !root.files-open && !root.codex-open && !root.history-open: VerticalLayout {
                 spacing: 9px;
                 HorizontalLayout {
                     spacing: 8px;
                     height: 32px;
-                    Button { text: @tr("Проверка отклика"); enabled: root.can-submit; clicked => { root.run-check(); } }
+                    Button { text: @tr("Проверка"); accessible-label: @tr("Проверка отклика"); enabled: root.can-submit; clicked => { root.run-check(); } }
                     Button { text: @tr("Заметки"); enabled: root.can-submit; clicked => { root.notes-query = ""; root.find-notes(""); } }
+                    Button { text: @tr("Файлы"); clicked => { root.files-open = true; } }
+                    Button { text: "Codex"; clicked => { root.codex-open = true; } }
+                    Button { text: @tr("История"); clicked => { root.history-open = true; root.load-history(); } }
                     Rectangle { horizontal-stretch: 1; }
                 }
 
