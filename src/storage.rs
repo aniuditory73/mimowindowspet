@@ -27,7 +27,20 @@ impl Store {
         Self::open_under(&local_app_data()?)
     }
 
-    fn open_under(app_data: &Path) -> io::Result<Self> {
+    pub fn notes_directory(&self, create: bool) -> io::Result<(PathBuf, File)> {
+        let path = self.root.join("notes-v1");
+        if create {
+            match fs::create_dir(&path) {
+                Ok(()) => (),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+                Err(error) => return Err(error),
+            }
+        }
+        let directory = open_directory(&path)?;
+        Ok((path, directory))
+    }
+
+    pub(crate) fn open_under(app_data: &Path) -> io::Result<Self> {
         // Hold each directory open without sharing deletion so it cannot be replaced mid-operation.
         let mut parents = Vec::new();
         for parent in app_data.ancestors().collect::<Vec<_>>().into_iter().rev() {
@@ -50,7 +63,7 @@ impl Store {
     }
 
     pub fn load(&self) -> io::Result<Settings> {
-        let file = match open_config(&self.root.join(CONFIG)) {
+        let file = match open_regular_file(&self.root.join(CONFIG)) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Settings::default()),
             Err(error) => return Err(error),
@@ -136,7 +149,7 @@ fn open_directory(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-fn open_config(path: &Path) -> io::Result<File> {
+pub(crate) fn open_regular_file(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ)
@@ -154,7 +167,7 @@ fn open_config(path: &Path) -> io::Result<File> {
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "unsafe settings file",
+            "unsafe data file",
         ));
     }
     Ok(file)

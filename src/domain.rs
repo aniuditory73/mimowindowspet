@@ -1,6 +1,25 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     CheckResponsiveness,
+    CreateNote(String),
+    FindNotes(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskKind {
+    Check,
+    CreateNote,
+    FindNotes,
+}
+
+impl Command {
+    pub fn kind(&self) -> TaskKind {
+        match self {
+            Self::CheckResponsiveness => TaskKind::Check,
+            Self::CreateNote(_) => TaskKind::CreateNote,
+            Self::FindNotes(_) => TaskKind::FindNotes,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

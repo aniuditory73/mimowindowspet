@@ -1,4 +1,6 @@
-import { Button, LineEdit, ProgressIndicator } from "std-widgets.slint";
+import { Button, LineEdit, ProgressIndicator, ScrollView } from "std-widgets.slint";
+
+export struct NoteView { label: string, text: string }
 
 export component MimoTray inherits SystemTrayIcon {
     in property <image> tray-image;
@@ -23,6 +25,11 @@ export component MimoWindow inherits Window {
     in property <bool> pinned: true;
     in property <image> window-icon;
     in-out property <bool> settings-open;
+    in-out property <bool> notes-open;
+    in property <[NoteView]> notes;
+    in-out property <string> note-text;
+    in property <string> notes-summary;
+    in-out property <string> notes-query;
     in property <[string]> corners;
     in property <int> selected-corner;
     in property <bool> saving;
@@ -39,6 +46,7 @@ export component MimoWindow inherits Window {
     callback toggle-pin();
     callback submit-command(string) -> bool;
     callback run-check();
+    callback find-notes(string);
     callback cancel-task();
     callback select-corner(int);
     callback exit-app();
@@ -119,8 +127,11 @@ export component MimoWindow inherits Window {
                     clicked => { root.toggle-pin(); }
                 }
                 Button {
-                    text: root.settings-open ? @tr("К задачам") : @tr("Настройки");
-                    clicked => { root.settings-open = !root.settings-open; }
+                    text: root.settings-open || root.notes-open ? @tr("К задачам") : @tr("Настройки");
+                    clicked => {
+                        if (root.notes-open) { root.notes-open = false; }
+                        else { root.settings-open = !root.settings-open; }
+                    }
                 }
                 Button { text: @tr("Свернуть"); clicked => { root.toggle-panel(); } }
             }
@@ -143,12 +154,46 @@ export component MimoWindow inherits Window {
                 }
             }
 
-            if !root.settings-open: VerticalLayout {
+            if root.notes-open: VerticalLayout {
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 34px;
+                    LineEdit {
+                        text <=> root.notes-query;
+                        placeholder-text: @tr("Поиск по заметкам");
+                        accessible-label: @tr("Поиск по заметкам");
+                        accepted => { if (root.can-submit) { root.find-notes(root.notes-query); } }
+                    }
+                    Button { text: @tr("Найти"); enabled: root.can-submit; clicked => { root.find-notes(root.notes-query); } }
+                }
+                if root.note-text == "": ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 4px;
+                        for note in root.notes: Button { text: note.label; clicked => { root.note-text = note.text; } }
+                    }
+                }
+                if root.note-text != "": ScrollView {
+                    vertical-stretch: 1;
+                    Text { text: root.note-text; color: #ededf7; wrap: word-wrap; }
+                }
+                HorizontalLayout {
+                    height: 34px;
+                    spacing: 8px;
+                    Text { text: root.note-text == "" ? root.notes-summary : @tr("Заметка"); color: #d3d4e5; vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; }
+                    if root.note-text != "": Button { text: @tr("К списку"); clicked => { root.note-text = ""; } }
+                }
+            }
+
+            if !root.settings-open && !root.notes-open: VerticalLayout {
                 spacing: 9px;
                 HorizontalLayout {
                     spacing: 8px;
                     height: 32px;
                     Button { text: @tr("Проверка отклика"); enabled: root.can-submit; clicked => { root.run-check(); } }
+                    Button { text: @tr("Заметки"); enabled: root.can-submit; clicked => { root.notes-query = ""; root.find-notes(""); } }
                     Rectangle { horizontal-stretch: 1; }
                 }
 

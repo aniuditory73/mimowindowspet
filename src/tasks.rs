@@ -4,16 +4,21 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::domain::{Command, TaskState};
-use crate::policy;
+use crate::{notes, policy, storage::Store};
 
 pub const CAPACITY: usize = 3;
 const CHECK_STEPS: u8 = 8;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Event {
     pub id: u64,
     pub state: TaskState,
     pub progress: u8,
+    pub output: Option<Output>,
+}
+
+pub enum Output {
+    Error(&'static str),
+    Notes(notes::Matches),
 }
 
 pub struct Cancellation(mpsc::Sender<()>);
@@ -79,29 +84,64 @@ impl Runner {
 }
 
 fn run(job: Job, publish: &impl Fn(Event)) {
-    let send = |state, progress| {
+    let send = |state, progress, output| {
         publish(Event {
             id: job.id,
             state,
             progress,
+            output,
         })
     };
     let cancelled = || !matches!(job.cancel.try_recv(), Err(mpsc::TryRecvError::Empty));
     if cancelled() {
-        send(TaskState::Cancelled, 0);
+        send(TaskState::Cancelled, 0, None);
         return;
     }
 
-    send(TaskState::Validating, 0);
-    policy::validate(job.command);
+    send(TaskState::Validating, 0, None);
+    if let Err(message) = policy::validate(&job.command) {
+        send(TaskState::Failed, 0, Some(Output::Error(message)));
+        return;
+    }
     if cancelled() {
-        send(TaskState::Cancelled, 0);
+        send(TaskState::Cancelled, 0, None);
         return;
     }
 
-    send(TaskState::Running, 0);
+    send(TaskState::Running, 0, None);
     match job.command {
-        Command::CheckResponsiveness => check_responsiveness(&job.cancel, send),
+        Command::CheckResponsiveness => {
+            check_responsiveness(&job.cancel, |state, progress| send(state, progress, None))
+        }
+        Command::CreateNote(text) => report_note_result(
+            Store::open()
+                .and_then(|store| notes::create(&store, &text, &cancelled))
+                .map(|()| None),
+            send,
+        ),
+        Command::FindNotes(query) => report_note_result(
+            Store::open()
+                .and_then(|store| notes::find(&store, &query, &cancelled))
+                .map(|found| Some(Output::Notes(found))),
+            send,
+        ),
+    }
+}
+
+fn report_note_result(
+    result: io::Result<Option<Output>>,
+    send: impl Fn(TaskState, u8, Option<Output>),
+) {
+    match result {
+        Ok(output) => send(TaskState::Succeeded, 0, output),
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+            send(TaskState::Cancelled, 0, None)
+        }
+        Err(_) => send(
+            TaskState::Failed,
+            0,
+            Some(Output::Error("Не удалось получить доступ к заметкам")),
+        ),
     }
 }
 
@@ -144,7 +184,7 @@ mod tests {
         })
         .unwrap();
         let command = Command::CheckResponsiveness;
-        let running = runner.submit(1, command).ok().unwrap();
+        let running = runner.submit(1, command.clone()).ok().unwrap();
         let next = || receive.recv_timeout(Duration::from_secs(3)).unwrap();
         assert_eq!(next().state, TaskState::Validating);
         assert_eq!(next().state, TaskState::Running);

@@ -5,6 +5,8 @@ mod app;
 #[cfg(windows)]
 mod domain;
 #[cfg(windows)]
+mod notes;
+#[cfg(windows)]
 mod platform;
 #[cfg(windows)]
 mod policy;

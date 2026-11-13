@@ -1,10 +1,19 @@
 use crate::domain::Command;
 
 pub fn route(input: &str) -> Option<Command> {
-    match input.trim().to_lowercase().as_str() {
+    let input = input.trim();
+    if let Some((prefix, body)) = input.split_once(':') {
+        return match prefix.trim().to_lowercase().as_str() {
+            "запомни" => Some(Command::CreateNote(body.trim().into())),
+            "найди заметки" => Some(Command::FindNotes(body.trim().into())),
+            _ => None,
+        };
+    }
+    match input.to_lowercase().as_str() {
         "проверка" | "проверка отклика" => {
             Some(Command::CheckResponsiveness)
         }
+        "заметки" => Some(Command::FindNotes(String::new())),
         _ => None,
     }
 }
@@ -13,6 +22,18 @@ pub fn route(input: &str) -> Option<Command> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn keeps_note_text_literal() {
+        assert_eq!(
+            route(" ЗАПОМНИ: Позвонить в 10:30 "),
+            Some(Command::CreateNote("Позвонить в 10:30".into()))
+        );
+        assert_eq!(
+            route("найди заметки: Звонок"),
+            Some(Command::FindNotes("Звонок".into()))
+        );
+        assert_eq!(route("запомни пароль"), None);
+    }
     #[test]
     fn recognizes_only_complete_commands() {
         assert_eq!(

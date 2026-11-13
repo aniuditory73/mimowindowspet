@@ -2,7 +2,8 @@ use std::rc::Rc;
 
 use slint::{ComponentHandle, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
-use crate::domain::{Corner, TaskState};
+use crate::domain::{Corner, TaskKind, TaskState};
+use crate::notes::Matches;
 
 slint::include_modules!();
 
@@ -23,16 +24,57 @@ pub fn corner_index(corner: Corner) -> i32 {
         .unwrap_or_default() as i32
 }
 
-pub fn status_text(state: TaskState) -> &'static str {
+pub fn task_name(kind: TaskKind) -> &'static str {
+    match kind {
+        TaskKind::Check => "Проверка отклика",
+        TaskKind::CreateNote => "Создание заметки",
+        TaskKind::FindNotes => "Поиск заметок",
+    }
+}
+
+pub fn task_status(kind: TaskKind, state: TaskState) -> &'static str {
     match state {
         TaskState::Queued => "В очереди",
         TaskState::Validating => "Проверка команды",
         TaskState::AwaitingApproval => "Ожидает подтверждения",
         TaskState::Running => "Выполняется",
-        TaskState::Succeeded => "Проверка завершена",
-        TaskState::Failed => "Превышено время проверки",
+        TaskState::Succeeded if kind == TaskKind::CreateNote => "Заметка сохранена",
+        TaskState::Succeeded if kind == TaskKind::Check => "Проверка завершена",
+        TaskState::Succeeded => "Поиск завершён",
+        TaskState::Failed if kind == TaskKind::Check => "Превышено время проверки",
+        TaskState::Failed => "Не удалось выполнить задачу",
         TaskState::Cancelled => "Отменена",
     }
+}
+
+pub fn show_notes(window: &MimoWindow, found: Matches) {
+    let notes = found
+        .texts
+        .into_iter()
+        .map(|text| {
+            let first_line = text.lines().next().unwrap_or_default();
+            let mut label: String = first_line.chars().take(45).collect();
+            if first_line.chars().count() > 45 || text.lines().nth(1).is_some() {
+                label.push('…');
+            }
+            NoteView {
+                label: label.into(),
+                text: text.into(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let hint = if notes.is_empty() {
+        "Заметки не найдены".to_owned()
+    } else if found.truncated {
+        format!("Показано {}. Уточните запрос.", notes.len())
+    } else {
+        format!("Найдено {}", notes.len())
+    };
+    window.set_note_text("".into());
+    window.set_notes_summary(hint.into());
+    window.set_notes(Rc::new(VecModel::from(notes)).into());
+    window.set_settings_open(false);
+    window.set_notes_open(true);
 }
 
 pub fn tray_icon(tray: &MimoTray, window: &MimoWindow) {

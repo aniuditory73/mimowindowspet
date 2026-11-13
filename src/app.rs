@@ -9,10 +9,10 @@ use std::time::Duration;
 use slint::ComponentHandle;
 use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
 
-use crate::domain::{Command, Corner, Settings, TaskState};
+use crate::domain::{Command, Corner, Settings, TaskKind, TaskState};
 use crate::platform::windows;
 use crate::storage::Store;
-use crate::tasks::{self, Cancellation, Event, Runner, SubmitError};
+use crate::tasks::{self, Cancellation, Event, Output, Runner, SubmitError};
 use crate::ui::{self, MimoTray, MimoWindow};
 
 enum Update {
@@ -22,10 +22,16 @@ enum Update {
 
 struct ActiveTask {
     id: u64,
+    kind: TaskKind,
     state: TaskState,
     progress: u8,
     cancel: Cancellation,
     cancelling: bool,
+}
+
+struct LastResult {
+    kind: TaskKind,
+    status: &'static str,
 }
 
 struct App {
@@ -34,7 +40,7 @@ struct App {
     runner: Runner,
     active: VecDeque<ActiveTask>,
     next_id: u64,
-    last_result: Option<TaskState>,
+    last_result: Option<LastResult>,
 }
 
 impl App {
@@ -44,11 +50,13 @@ impl App {
             return false;
         }
         let id = self.next_id;
+        let kind = command.kind();
         match self.runner.submit(id, command) {
             Ok(cancel) => {
                 self.next_id += 1;
                 self.active.push_back(ActiveTask {
                     id,
+                    kind,
                     cancel,
                     state: TaskState::Queued,
                     progress: 0,
@@ -94,7 +102,18 @@ impl App {
                 task.state = event.state;
                 task.progress = event.progress;
                 if event.state.is_terminal() {
-                    self.last_result = Some(event.state);
+                    let status = match event.output {
+                        Some(Output::Error(message)) => message,
+                        Some(Output::Notes(found)) => {
+                            ui::show_notes(window, found);
+                            "Поиск завершён"
+                        }
+                        None => ui::task_status(task.kind, event.state),
+                    };
+                    self.last_result = Some(LastResult {
+                        kind: task.kind,
+                        status,
+                    });
                     self.active.pop_front();
                 }
                 self.render_tasks(window);
@@ -118,27 +137,29 @@ impl App {
     fn render_tasks(&self, window: &MimoWindow) {
         window.set_can_submit(self.active.len() < tasks::CAPACITY);
         if let Some(task) = self.active.front() {
-            window.set_task_name("Проверка отклика".into());
+            window.set_task_name(ui::task_name(task.kind).into());
             let status = if task.cancelling {
                 "Отмена запрошена"
             } else {
-                ui::status_text(task.state)
+                ui::task_status(task.kind, task.state)
             };
             window.set_task_status(status.into());
             window.set_can_cancel(!task.cancelling);
-            window.set_show_progress(task.state == TaskState::Running);
+            window.set_show_progress(
+                task.kind == TaskKind::Check && task.state == TaskState::Running,
+            );
             window.set_task_progress(f32::from(task.progress) / 100.0);
             let mut summary = format!("В очереди: {}", self.active.len() - 1);
-            if let Some(last) = self.last_result {
-                summary.push_str(&format!(" · Последняя: {}", ui::status_text(last)));
+            if let Some(last) = &self.last_result {
+                summary.push_str(&format!(" · {}", last.status));
             }
             window.set_message(summary.into());
         } else {
             window.set_can_cancel(false);
             window.set_show_progress(false);
-            if let Some(state) = self.last_result {
-                window.set_task_name("Проверка отклика".into());
-                window.set_task_status(ui::status_text(state).into());
+            if let Some(last) = &self.last_result {
+                window.set_task_name(ui::task_name(last.kind).into());
+                window.set_task_status(last.status.into());
             } else {
                 window.set_task_name("Нет активных задач".into());
                 window.set_task_status("".into());
@@ -242,10 +263,20 @@ fn bind_tasks(window: &MimoWindow, app: &Rc<RefCell<App>>) {
             return false;
         };
         let Some(command) = crate::router::route(&input) else {
-            window.set_message("Доступная команда: «проверка отклика»".into());
+            window.set_message("Команды: проверка, заметки, запомни: текст".into());
             return false;
         };
         state.borrow_mut().submit(&window, command)
+    });
+
+    let weak = window.as_weak();
+    let state = Rc::clone(app);
+    window.on_find_notes(move |query| {
+        if let Some(window) = weak.upgrade() {
+            state
+                .borrow_mut()
+                .submit(&window, Command::FindNotes(query.trim().into()));
+        }
     });
 
     let weak = window.as_weak();
