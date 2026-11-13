@@ -1,0 +1,185 @@
+import { Button, LineEdit, ProgressIndicator } from "std-widgets.slint";
+
+export component MimoTray inherits SystemTrayIcon {
+    in property <image> tray-image;
+    callback open-panel();
+    callback hide-window();
+    callback exit-app();
+
+    tooltip: "MIMO";
+    icon: root.tray-image;
+    clicked => { root.open-panel(); }
+
+    Menu {
+        MenuItem { title: @tr("Открыть MIMO"); activated => { root.open-panel(); } }
+        MenuItem { title: @tr("Скрыть островок"); activated => { root.hide-window(); } }
+        MenuSeparator {}
+        MenuItem { title: @tr("Выйти"); activated => { root.exit-app(); } }
+    }
+}
+
+export component MimoWindow inherits Window {
+    in property <bool> expanded;
+    in property <image> window-icon;
+    in-out property <bool> settings-open;
+    in property <[string]> corners;
+    in property <int> selected-corner;
+    in property <bool> saving;
+    in property <string> settings-message;
+    in-out property <string> command;
+    in property <string> message;
+    in property <string> task-name;
+    in property <string> task-status;
+    in property <float> task-progress;
+    in property <bool> can-cancel;
+    in property <bool> show-progress;
+    in property <bool> can-submit: true;
+    callback toggle-panel();
+    callback submit-command(string) -> bool;
+    callback run-check();
+    callback cancel-task();
+    callback select-corner(int);
+    callback exit-app();
+    callback refresh();
+
+    title: "MIMO";
+    icon: root.window-icon;
+    no-frame: true;
+    width: root.expanded ? 420px : 100px;
+    height: root.expanded ? 286px : 42px;
+    background: transparent;
+    default-font-family: "Segoe UI";
+    default-font-size: 14px;
+
+    function send-command() {
+        if (root.can-submit && root.submit-command(root.command)) {
+            root.command = "";
+        }
+    }
+
+    if !root.expanded: Rectangle {
+        forward-focus: island-focus;
+        background: island-touch.pressed ? #303244 : island-touch.has-hover ? #252734 : #14151d;
+        border-radius: 21px;
+        border-width: 1px;
+        border-color: #555769;
+
+        accessible-role: button;
+        accessible-label: @tr("Открыть MIMO");
+        accessible-action-default => { root.toggle-panel(); }
+
+        Text {
+            text: "MIMO";
+            color: #f4f4fb;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        island-touch := TouchArea { clicked => { root.toggle-panel(); } }
+        island-focus := FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.Space || event.text == Key.Return) {
+                    root.toggle-panel();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+        if island-focus.has-focus: Rectangle {
+            x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px;
+            border-radius: 18px;
+            border-width: 1px;
+            border-color: #cbd1ef;
+        }
+    }
+
+    if root.expanded: Rectangle {
+        background: @linear-gradient(150deg, #1b1d28 0%, #121319 100%);
+        border-radius: 20px;
+        border-width: 1px;
+        border-color: #494b5d;
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 9px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                height: 34px;
+                Text { text: "MIMO"; color: #f4f4fb; font-weight: 700; font-size: 19px; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                Button {
+                    text: root.settings-open ? @tr("К задачам") : @tr("Настройки");
+                    clicked => { root.settings-open = !root.settings-open; }
+                }
+                Button { text: @tr("Свернуть"); clicked => { root.toggle-panel(); } }
+            }
+
+            if root.settings-open: VerticalLayout {
+                spacing: 8px;
+                Text { text: @tr("Угол рабочего экрана"); color: #ededf7; }
+                for corner[index] in root.corners: Button {
+                    text: corner;
+                    primary: root.selected-corner == index;
+                    enabled: !root.saving;
+                    height: 30px;
+                    clicked => { root.select-corner(index); }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: root.settings-message; color: #d3d4e5; vertical-alignment: center; overflow: elide; }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: @tr("Выйти"); clicked => { root.exit-app(); } }
+                }
+            }
+
+            if !root.settings-open: VerticalLayout {
+                spacing: 9px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 32px;
+                    Button { text: @tr("Проверка отклика"); enabled: root.can-submit; clicked => { root.run-check(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+
+                Rectangle {
+                    background: #222431;
+                    border-radius: 12px;
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 5px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: root.task-name; color: #f4f4fb; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                            if root.can-cancel: Button { text: @tr("Отменить"); clicked => { root.cancel-task(); } }
+                        }
+                        Text { text: root.task-status; color: #cfd1e3; }
+                        if root.show-progress: ProgressIndicator { progress: root.task-progress; }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+
+                Text {
+                    text: root.message;
+                    color: #d3d4e5;
+                    overflow: elide;
+                    height: 18px;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 36px;
+                    LineEdit {
+                        text <=> root.command;
+                        placeholder-text: @tr("Введите команду");
+                        accessible-label: @tr("Команда");
+                        accepted => { root.send-command(); }
+                    }
+                    Button { text: @tr("Запустить"); enabled: root.can-submit; clicked => { root.send-command(); } }
+                }
+            }
+        }
+    }
+}
